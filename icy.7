@@ -1,0 +1,92 @@
+.TH ICY 7 "May 2026" "ICY" "Miscellaneous Information"
+.SH NAME
+ICY \- in\-band metadata format used by Shoutcast and Icecast streams
+.SH DESCRIPTION
+ICY metadata is an in\-band metadata protocol originally introduced by
+Shoutcast for MP3 internet radio streams. It is also supported by Icecast
+for MP3 and AAC (ADTS) streams. ICY metadata is inserted into the audio
+byte stream at fixed intervals defined by the
+.B icy\-metaint
+header.
+.PP
+The server sends HTTP\-style headers such as:
+.PP
+.nf
+icy\-metaint: N
+icy\-name: Station Name
+icy\-genre: Genre
+icy\-url: Station URL
+.fi
+.PP
+The value of
+.B icy\-metaint
+specifies the number of audio bytes between metadata blocks. After exactly
+N bytes of audio, the server inserts a metadata block consisting of:
+.PP
+.RS
+1 byte: length indicator (L), where metadata length is L * 16 bytes  
+.br
+L*16 bytes: metadata payload (may be zero\-length)
+.RE
+.PP
+The metadata payload is a semicolon\-separated list of key/value pairs,
+typically including:
+.PP
+.nf
+StreamTitle='Artist \- Track';
+StreamUrl='https://example.com/';
+.fi
+.PP
+If L is zero, no metadata is present and playback continues immediately
+with the next audio byte.
+.PP
+ICY metadata is not aligned to codec frame boundaries. Clients must count
+raw audio bytes and detect metadata blocks even when they fall inside
+.BR read (2)
+calls. The
+.B icy\-metaint
+value may be any positive integer and is not required to be even or
+aligned.
+.PP
+ICY metadata is supported only by continuous audio streams such as MP3 and
+AAC (ADTS). Segmented streaming formats such as HLS and DASH do not
+support ICY metadata.
+.SH IMPLEMENTATION NOTES
+A correct ICY client must:
+.PP
+.RS
+\&\bullet\ count audio bytes until icy\-metaint is reached  
+.br
+\&\bullet\ handle partial and oversized reads  
+.br
+\&\bullet\ handle metadata blocks of length zero  
+.br
+\&\bullet\ strip metadata bytes before passing audio to a decoder  
+.br
+\&\bullet\ tolerate odd or changing icy\-metaint values  
+.br
+\&\bullet\ avoid assuming alignment to codec frames  
+.RE
+.PP
+Failure to handle these conditions may result in corrupted audio, decoder
+errors, or loss of metadata.
+.SH EXAMPLES
+A typical metadata block:
+.PP
+.nf
+StreamTitle='Example Artist \- Example Track';
+StreamUrl='https://example.com/';
+.fi
+.PP
+A zero\-length metadata block:
+.PP
+.nf
+(length byte = 0)
+.fi
+.SH SEE ALSO
+icyext(1), ffmpeg(1), shoutcast(7), icecast(7)
+.SH HISTORY
+The ICY protocol originated with Shoutcast in the late 1990s and was later
+adopted by Icecast for compatibility.
+.SH AUTHORS
+placeholder

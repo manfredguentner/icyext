@@ -1,0 +1,72 @@
+.TH ICYEXT 1 "2026-05-06" "icyext 1.0" "Terminal ICY Tag Extractor"
+.SH NAME
+icyext \- terminal ICY metadata extractor
+.SH SYNOPSIS
+.B icyext
+[\-t] [\-u url] url
+.SH DESCRIPTION
+.B icyext
+is a Perl script that accepts an internet radio URL either as an option or
+from standard input. If ICY metadata is available, it will be printed to
+standard error. By default, the audio stream is buffered and written
+unchanged to standard output. The program does not include any built\-in
+audio playback functionality.
+.PP
+AAC streams can optionally be transcoded to MP3; see the
+.B \-t
+option below.
+.PP
+.B icyext
+was developed on NetBSD as part of a UPnP and internet radio project.
+.PP
+Only Perl core modules are used. The external tools
+.BR ffprobe
+and
+.BR ffmpeg
+are required.
+.SH OPTIONS
+.TP
+.B \-h
+Show a short usage message.
+.TP
+.B \-u URL
+Specify a URL. The URL may be an http(s) address or "\-".
+If "\-" is used, the URL is read from standard input or a pipe.
+The same behavior applies when
+.B icyext \-
+is used.
+.TP
+.B \-t
+By default, the audio stream is passed through unchanged so the user may
+choose any external player. When
+.B \-t
+is specified, AAC streams are transcoded to MP3. The transcoder attempts to
+use the next higher bitrate; for example, a 96k AAC stream will be
+transcoded to approximately 128k MP3. The maximum bitrate is capped at
+320k.
+.PP
+MP3 streams are never transcoded.
+.SH EXAMPLES
+Send a URL to
+.B icyext
+and play the stream with mpg123:
+.PP
+.nf
+echo "http://somemusic.com/stream.aac" | icyext -t - | mpg123 -q -
+.fi
+.PP
+Send a UPnP URL into the playback chain:
+.PP
+.nf
+upnpls .1.3.1.1@f=url | icyext -t - | mpg123 -q -
+.fi
+.SH BUGS
+Probably.
+.SH AUTHOR
+Written by Manfred Güntner.
+.SH REPORTING BUGS
+https://github.com/manfredguentner/icyext/issues
+.SH COPYRIGHT
+Copyright \(co 2026 Manfred Güntner.
+This software is distributed under the BSD 2\-Clause License; see the
+LICENSE file.

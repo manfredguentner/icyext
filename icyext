@@ -1,0 +1,350 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use Getopt::Std;
+use IO::Socket::INET;
+use IO::Socket::SSL qw(SSL_VERIFY_NONE);
+use JSON::PP;
+
+
+my $url = "";
+my $tflag = 0;
+my %opts;
+
+if (!getopts('htu:', \%opts)) {
+  usage();
+  exit 1;
+}
+if ($opts{h}) {
+  usage();
+  exit 0;
+}
+if ($opts{t}) {
+  $tflag = 1;
+}
+if (defined $opts{u}) {
+  $url = $opts{u};
+}
+if ($url eq "") {
+  $url = $ARGV[0];
+}
+if (! defined $url) {
+  usage();
+  exit 1;
+}
+if ($url eq "-") {
+  $url = <STDIN>;
+  if (! defined $url) {
+    usage();
+    exit 1;
+  }
+}
+
+# main
+
+# All hail NetBSD
+my @candidates = (
+    $ENV{FFMPEG},
+    qw(ffmpeg ffmpeg8 ffmpeg7 ffmpeg6)
+);
+
+my $ffmpeg;
+for my $cmd (@candidates) {
+    next unless defined $cmd;
+    my $path = `command -v $cmd 2>/dev/null`;
+    chomp $path;
+    if ($path) {
+        $ffmpeg = $path;
+        last;
+    }
+}
+
+if ( ! $ffmpeg ) {
+  perror ("ffmpeg not found");
+  exit 1;
+}
+
+@candidates = (
+    $ENV{FFMPEG},
+    qw(ffprobe ffprobe8 ffprobe7 ffprobe6)
+);
+
+my $ffprobe;
+for my $cmd (@candidates) {
+    next unless defined $cmd;
+    my $path = `command -v $cmd 2>/dev/null`;
+    chomp $path;
+    if ($path) {
+        $ffprobe = $path;
+        last;
+    }
+}
+
+if ( ! $ffprobe ) {
+  perror ("ffprobe not found");
+  exit 1;
+}                                                  
+
+# use ffprobe to get a full json about the stream
+my $cmd = "$ffprobe -v quiet -show_format -print_format json $url";
+my $output = `$cmd`;
+my $data = decode_json($output);
+
+# Exit on anything else but mp3 or aac
+if ($data->{format}{format_name} ne "mp3" && $data->{format}{format_name} ne "aac") {
+  perror("Onyl MP3 and AAC are supportet $data->{format}{format_name}");
+  exit 1;
+}
+
+# Get headers with upto 5 follow-redirects
+my ($sock, $headers) = http_get_follow($url, 5);
+
+# Extract icy-metaint
+my $metaint = 0;
+my $isicy = 0;
+if ($headers =~ /^icy-metaint:\s*(\d+)/mi) {
+  $metaint = $1;
+} else {
+  $metaint = 2048;
+  $isicy = 1;
+}
+
+my $decoder;
+my $dec;
+my $bitrate;
+# bit rate form json
+my $krate = int($data->{format}{bit_rate} / 1000);
+
+# If transcode AAC to MP3 then one level higher
+if ($krate < 60) {
+  $bitrate = "64k";
+} elsif ($krate < 90) {
+  $bitrate = "96k";
+} elsif ($krate < 120) {
+  $bitrate = "128k";
+} elsif ($krate < 190) {
+  $bitrate = "192k";
+} elsif ($krate < 250) {
+  $bitrate = "256k";
+} else {
+  $bitrate = "320k";
+}
+
+# encoding form json
+my $codec = $data->{format}{format_name};
+
+# defining how to handle the stream
+# default: leave the stream as is
+# -t : transcode to mp3
+# mp3 is the base because i like mpg123 as player ;)
+
+if ( $codec eq "mp3" ) {
+  #open $dec, ">&", \*STDOUT or die "dup STDOUT failed: $!";
+  open $dec, ">&", \*STDOUT; 
+  if (! $dec ) {
+    perror ("dup STDOUT failed: $!");
+    exit 1;
+  }
+} else {
+  if ($tflag == 1) {
+    $decoder = $ffmpeg." -v quiet -i - -c:a libmp3lame -b:a $bitrate -f mp3 -ar 48000 -joint_stereo 0 -ac 2 - ";
+    open $dec, "|-", "sh", "-c",
+    $decoder;
+    #or die "cannot start decoder pipeline: $!";
+    if (! $dec) {
+      perror ("cannot start decoder pipeline: $!");
+      exit 1;
+    }
+  } else {
+    open $dec, ">&", \*STDOUT;
+    if (! $dec ) {
+      perror ("dup STDOUT failed: $!");
+      exit 1;
+    }
+  }
+}
+
+
+# STREAM LOOP (audio + metadata) #
+
+
+my @buffer;
+my $max_buffer = 12;     # number of audio blocks to buffer
+my $min_start  = 2;     # start when n blocks are fileld
+my $stall_limit = 6;    # how many failed reads before giving up
+
+my $stall = 0;
+my $alln = 0;
+my $minibuf = "";
+
+while (1) {
+
+  # Try to read audio block
+  my $audio = "";
+#  my $n = read($sock, $audio, $metaint);
+  my $n = read($sock, $audio,1);
+  
+  if ($n) {
+    $alln = $alln + $n;
+    $minibuf = $minibuf.$audio;
+    # Successful read → reset stall counter
+    $stall = 0;
+
+    if ( $isicy == 0 && $alln >= $metaint) {
+    $alln = 0;
+    # No stops if there is no icy. destroys VBR
+      # Read metadata length byte
+      my $len_byte = "";
+      read($sock, $len_byte, 1) or next;
+      my $meta_len = ord($len_byte) * 16;
+
+      # Read metadata block
+      my $meta = "";
+      read($sock, $meta, $meta_len) if $meta_len > 0;
+
+      # Parse StreamTitle
+      if ($meta_len > 0 && $meta =~ /StreamTitle='([^']*)'/) {
+        my $stitle = $1;
+        print STDERR " : $stitle\n" if length $stitle;
+      }
+    }
+
+    if (length($minibuf) == 2048) {
+      push @buffer, $minibuf;
+      shift @buffer while @buffer > $max_buffer;
+      $minibuf = "";
+    }
+  } else {
+  # No data read → network stall
+    $stall++;
+
+    # If buffer still has audio, keep feeding decoder
+    if (@buffer) {
+      print $dec shift @buffer;
+      next;
+    }
+
+    # If too many stalls → give up
+    if ($stall > $stall_limit) {
+      print STDERR "Network stalled too long, ending.\n";
+      last;
+    }
+
+    # Otherwise wait a bit and retry
+    select(undef, undef, undef, 0.1);
+    next;
+  }
+
+  # Feed decoder only when buffer is sufficiently filled
+  if (@buffer > $min_start) {
+    print $dec shift @buffer;
+  }
+}
+
+close $dec;
+close $sock;
+
+exit 0;
+
+# functions
+
+sub perror {
+# C like style. I dont want to have the word die in my code ;)
+  my ($message) = @_;
+  printf STDERR "%s\n",$message; 
+}
+
+sub usage {
+  printf "Usage: $0 [-t -u url] url\n";
+}
+
+sub parse_url {
+  my ($url) = @_;
+
+  my $scheme = 'http';
+  my $host   = '';
+  my $port   = 80;
+  my $path   = '/';
+
+  if ($url =~ m{^(https?)://([^/:]+)(?::(\d+))?(.*)$}i) {
+    $scheme = lc $1;
+    $host   = $2;
+    $port   = $3 if defined $3;
+    $path   = $4 if $4 ne '';
+
+    # FIX: default HTTPS port
+    if ($scheme eq 'https' && !defined $3) {
+      $port = 443;
+    }
+  } else {
+    perror("Invalid URL: $url");
+    exit 1
+  }
+  return ($scheme, $host, $port, $path);
+}
+
+sub http_get_follow {
+  my ($url, $max_redirects) = @_;
+  $max_redirects ||= 5;
+
+  for (1 .. $max_redirects) {
+
+    my ($scheme, $host, $port, $path) = parse_url($url);
+
+    my $sock;
+    if ($scheme eq 'https') {
+      $sock = IO::Socket::SSL->new(
+              PeerHost        => $host,
+              PeerPort        => $port,
+              SSL_verify_mode => SSL_VERIFY_NONE,
+              );
+
+      if (!$sock) {
+        perror("SSL connect to $host:$port failed: $!");
+        exit 1;
+      }
+     } elsif ($scheme eq 'http') {
+       $sock = IO::Socket::INET->new(
+               PeerHost => $host,
+               PeerPort => $port,
+               Proto    => 'tcp',
+               );
+
+        if (!$sock) {
+          perror("SSL connect to $host:$port failed: $!");
+          exit 1;
+        }
+     } else {
+      perror("Unsupported scheme: $scheme");
+      exit 1;
+     }
+
+     print $sock "GET $path HTTP/1.0\r\n";
+     print $sock "Host: $host\r\n";
+     print $sock "Icy-MetaData: 1\r\n";
+     print $sock "\r\n";
+
+     my $headers = "";
+     while (my $line = <$sock>) {
+       $headers .= $line;
+       last if $line eq "\r\n";
+     }
+
+     # Redirect?
+     if ($headers =~ m{^HTTP/\d\.\d\s+(30[1278])}i) {
+       if ($headers =~ /^Location:\s*(\S+)/mi) {
+         $url = $1;
+         #print "Redirect → $url\n";
+         close $sock;
+         next;
+       }
+        perror("Redirect without Location header");
+        exit 1;
+       }
+
+       return ($sock, $headers);
+     }
+    perror("Too many redirects");
+    exit 1;
+}
