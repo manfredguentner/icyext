@@ -108,7 +108,11 @@ if (exists $data->{format}{format_name}) {
     } else {
       $cmd = "$ffmpeg -i $url -v quiet -c:a copy -f mpegts -";
     }
-    open(my $fh, "$cmd |") or die "Could not open pipe: $!";
+    open(my $fh, "$cmd |");
+    if (!$fh) {
+      perror ("Could not open pipe: $!");
+      exit 1;
+    }
     while (my $line = <$fh>) {
       print $line;
     }
