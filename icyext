@@ -84,16 +84,39 @@ for my $cmd (@candidates) {
 if ( ! $ffprobe ) {
   perror ("ffprobe not found");
   exit 1;
-}                                                  
-
+}        
+chomp $url;
 # use ffprobe to get a full json about the stream
 my $cmd = "$ffprobe -v quiet -show_format -print_format json $url";
 my $output = `$cmd`;
 my $data = decode_json($output);
 
-# Exit on anything else but mp3 or aac
-if ($data->{format}{format_name} ne "mp3" && $data->{format}{format_name} ne "aac") {
-  perror("Onyl MP3 and AAC are supportet $data->{format}{format_name}");
+# mp3, aac, ogg support icy and can be buffered
+# hls cant be buffered but we acceptit. See below
+if (exists $data->{format}{format_name}) {
+  if ($data->{format}{format_name} ne "mp3" && $data->{format}{format_name} ne "aac" && 
+      $data->{format}{format_name} ne "ogg" && $data->{format}{format_name} ne "hls") 
+  {
+    perror("unknown codec: $data->{format}{format_name}");
+    exit 1;
+  }
+  if ($data->{format}{format_name} eq "hls" ) {
+  # We want to support it, but it cant be buffered and has no icy
+  # So we do it here and exit at the end.
+    if ($tflag == 1 ) { 
+      $cmd = "$ffmpeg -i $url -v quiet  -c:a libmp3lame -b:a 128k -f mp3 -joint_stereo 0 -ac 2 - ";
+    } else {
+      $cmd = "$ffmpeg -i $url -v quiet -c:a copy -f mpegts -";
+    }
+    open(my $fh, "$cmd |") or die "Could not open pipe: $!";
+    while (my $line = <$fh>) {
+      print $line;
+    }
+    close($fh); 
+    exit 0;
+  }
+} else {
+  perror("$url does not look like an audio stream");
   exit 1;
 }
 
@@ -113,25 +136,30 @@ if ($headers =~ /^icy-metaint:\s*(\d+)/mi) {
 my $decoder;
 my $dec;
 my $bitrate;
-# bit rate form json
-my $krate = int($data->{format}{bit_rate} / 1000);
 
-# If transcode AAC to MP3 then one level higher
-if ($krate < 60) {
-  $bitrate = "64k";
-} elsif ($krate < 90) {
-  $bitrate = "96k";
-} elsif ($krate < 120) {
-  $bitrate = "128k";
-} elsif ($krate < 190) {
+if ($data->{format}{format_name} eq "ogg") {
   $bitrate = "192k";
-} elsif ($krate < 250) {
-  $bitrate = "256k";
 } else {
-  $bitrate = "320k";
+  # bit rate form json
+  my $krate = int($data->{format}{bit_rate} / 1000);
+
+  # If transcode AAC to MP3 then one level higher
+  if ($krate < 60) {
+    $bitrate = "64k";
+  } elsif ($krate < 90) {
+    $bitrate = "96k";
+  } elsif ($krate < 120) {
+    $bitrate = "128k";
+  } elsif ($krate < 190) {
+    $bitrate = "192k";
+  } elsif ($krate < 250) {
+    $bitrate = "256k";
+  } else {
+    $bitrate = "320k";
+  }
 }
 
-# encoding form json
+# encoding from json
 my $codec = $data->{format}{format_name};
 
 # defining how to handle the stream
@@ -148,7 +176,7 @@ if ( $codec eq "mp3" ) {
   }
 } else {
   if ($tflag == 1) {
-    $decoder = $ffmpeg." -v quiet -i - -c:a libmp3lame -b:a $bitrate -f mp3 -ar 48000 -joint_stereo 0 -ac 2 - ";
+    $decoder = $ffmpeg." -v quiet -i - -c:a libmp3lame -b:a $bitrate -f mp3 -joint_stereo 0 -ac 2 - ";
     open $dec, "|-", "sh", "-c",
     $decoder;
     #or die "cannot start decoder pipeline: $!";
